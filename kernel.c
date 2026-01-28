@@ -52,8 +52,9 @@ void kernel_main() {
     // 5. Interrupts (MUST be before paging_enable to catch faults)
     idt_init();
     pic_init();
+    timer_init(100); // 100 Hz timer
     console_print_colored("[ ok ] ", COLOR_GREEN_ON_BLACK);
-    console_print_colored("IDT and PIC configured.\n", COLOR_GREEN_ON_BLACK);
+    console_print_colored("IDT, PIC and Timer configured.\n", COLOR_GREEN_ON_BLACK);
 
     // 6. Enable Paging
     paging_enable();
@@ -94,6 +95,18 @@ kernel_user_entry();
     }
 }
 void kernel_user_entry(){
+    console_print("Launching system init (/sbin/init)...\n");
+    __asm__ volatile("mov %%esp, %0" : "=m"(kernel_esp_saved));
+    char* argv[] = {"/sbin/init", NULL};
+    task_t* init_task = load_user_program(NULL, "/sbin/init", 1, argv);
+    
+    if (init_task) {
+        init_task->state = TASK_BACKGROUND;
+        task_run(init_task);
+    }
+    
+    // Fallback if launch fails
+    console_print_colored("Launch failed! Falling back to kernel shell.\n", COLOR_LIGHT_RED);
     extern void kern_shell_init();
     kern_shell_init();
 }
@@ -111,7 +124,12 @@ void kernel_after_user(void) {
 
         char* prog = programs[current_program];  // Save pointer
         current_program++;  // Increment before jumping
-        load_user_program(prog);  // Now jump
+        char* argv[] = {prog, NULL};
+        task_t* next_task = load_user_program(NULL, prog, 1, argv);
+        
+        if (next_task) {
+            task_run(next_task);
+        }
     } else {
         console_print_colored("\nAll programs finished. System halting.\n",
                             COLOR_GREEN_ON_BLACK);

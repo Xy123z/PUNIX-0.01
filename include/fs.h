@@ -9,6 +9,17 @@
 #define FS_MAX_INODES       256
 #define SECTOR_SIZE         512
 
+// Permission bits
+#define S_IRUSR 0400
+#define S_IWUSR 0200
+#define S_IXUSR 0100
+#define S_IRGRP 0040
+#define S_IWGRP 0020
+#define S_IXGRP 0010
+#define S_IROTH 0004
+#define S_IWOTH 0002
+#define S_IXOTH 0001
+
 // --- New Disk Layout ---
 #define FS_SUPERBLOCK_SECTOR    256
 #define FS_INODE_BITMAP_SECTOR  257
@@ -75,7 +86,7 @@ fs_node_t* fs_get_node(uint32_t id);
  * Supports absolute paths ("/") and relative paths from start_id.
  * Handles "." and "..".
  */
-fs_node_t* fs_find_node(char* path, uint32_t start_id);
+fs_node_t* fs_find_node(const char* path, uint32_t start_id);
 
 /**
  * @brief Updates a node on disk.
@@ -93,7 +104,17 @@ uint32_t fs_find_node_local_id(uint32_t parent_id, char* name);
  * Automatically persists changes to disk.
  * @return 1 on success, 0 on failure.
  */
-int fs_create_node(uint32_t parent_id, char* name, uint8_t type);
+int fs_create_node(uint32_t parent_id, char* name, uint8_t type, uint32_t uid, uint32_t gid);
+
+/**
+ * @brief Checks if the given uid/gid has the requested permissions on a node.
+ * @param node Pointer to the inode
+ * @param uid User ID to check
+ * @param gid Group ID to check
+ * @param mask Permission mask (4=read, 2=write, 1=execute)
+ * @return 1 if allowed, 0 if denied
+ */
+int fs_check_permission(inode_t* node, uint32_t uid, uint32_t gid, uint32_t mask);
 
 /**
  * @brief Deletes a node by ID.
@@ -139,5 +160,10 @@ int fs_write(inode_t* node, uint32_t offset, uint32_t size, uint8_t* buffer);
  * @brief Flushes all dirty cache entries to disk.
  */
 void fs_sync();
+
+/**
+ * @brief Resolves the full path of an inode.
+ */
+void fs_get_full_path(uint32_t id, char* buffer);
 
 #endif // FS_H

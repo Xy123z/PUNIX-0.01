@@ -4,7 +4,8 @@
 enter_user_mode:
     ; Parameters: [esp+4] = EIP, [esp+8] = ESP
     
-    cli
+    ; Interrupts are already enabled by kernel_main (sti at line 75 of kernel.c)
+    ; Do NOT disable them here, as that prevents keyboard IRQ from working
     mov ebx, [esp + 4]    ; target_eip
     mov eax, [esp + 8]    ; target_esp
 

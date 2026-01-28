@@ -26,4 +26,11 @@ typedef int bool;
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
+typedef struct {
+    uint32_t pid;
+    uint32_t ppid;
+    uint32_t state;
+    char name[32];
+} proc_info_t;
+
 #endif // TYPES_H

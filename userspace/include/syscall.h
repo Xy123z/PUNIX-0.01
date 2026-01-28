@@ -30,6 +30,11 @@
 #define SYS_SYNC         23
 #define SYS_CHUSER       24
 #define SYS_CHPASS       25
+#define SYS_GETGID       44
+#define SYS_SETGID       45
+#define SYS_DRAW_CHAR_AT 46
+#define SYS_DRAW_STRING_AT 47
+#define SYS_UPDATE_CURSOR 48
 #define SYS_GETUID       26
 #define SYS_SETUID       27
 #define SYS_AUTHENTICATE 28

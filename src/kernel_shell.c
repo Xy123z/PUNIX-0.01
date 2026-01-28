@@ -172,7 +172,12 @@ void ks_cmd_run(char* path) {
     console_print(full_path);
     console_print("\n");
     
-    load_user_program(full_path);
+    char* argv[] = {full_path, NULL};
+    task_t* new_task = load_user_program(NULL, full_path, 1, argv);
+    
+    if (new_task) {
+        task_run(new_task);
+    }
     
     // If we return here, it might be an error or simple return
 }

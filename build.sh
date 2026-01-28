@@ -11,7 +11,9 @@ echo "    Done!"
 echo ""
 
 # Compiler flags
-CFLAGS="-m32 -Iinclude -ffreestanding -nostdlib -fno-pie -fno-pic -fno-stack-protector -O2"
+# -nostdinc -fno-builtin ensures we don't accidentally use host headers or builtins
+CFLAGS="-m32 -Iinclude -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-pie -fno-pic -fno-stack-protector -O2"
+USER_CFLAGS="-m32 -Iuserspace/libc/include -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-pie -fno-pic -fno-stack-protector -O2"
 
 # Compile each module
 echo "[2/16] Compiling string.c..."
@@ -30,16 +32,8 @@ echo "[5/16] Compiling interrupt.c..."
 gcc $CFLAGS -c src/interrupt.c -o interrupt.o
 if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
 
-echo "[6/16] Compiling shell.c..."
-gcc $CFLAGS -c src/shell.c -o shell.o
-if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
-
 echo "[7/16] Compiling fs.c..."
 gcc $CFLAGS -c src/fs.c -o fs.o
-if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
-
-echo "[8/16] Compiling text.c..."
-gcc $CFLAGS -c src/text.c -o text.o
 if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
 
 echo "[9/16] Compiling gdt.c..."
@@ -50,9 +44,10 @@ echo "[10/16] Compiling task.c..."
 gcc $CFLAGS -c src/task.c -o task.o
 if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
 
-echo "[11/16] Assembling GDT flush, User Entry & Boot Entry..."
+echo "[11/16] Assembling GDT flush, User Entry, Task Switch & Boot Entry..."
 nasm -f elf32 src/gdt_flush.asm -o gdt_flush.o
 nasm -f elf32 src/user_entry.asm -o user_entry.o
+nasm -f elf32 src/task_asm.asm -o task_asm.o
 nasm -f elf32 src/boot_entry.asm -o boot_entry.o
 
 
@@ -80,6 +75,10 @@ echo "[16/16] Compiling auth.c..."
 gcc $CFLAGS -c src/auth.c -o auth.o
 if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
 
+echo "[16b/16] Compiling pipe.c..."
+gcc $CFLAGS -c src/pipe.c -o pipe.o
+if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
+
 echo "[17/16] Compiling paging.c..."
 gcc $CFLAGS -c src/paging.c -o paging.o
 if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
@@ -99,7 +98,7 @@ if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
 
 echo "[21/16] Linking kernel..."
 ld -m elf_i386 -Ttext 0x10000 --oformat binary \
-   boot_entry.o kernel.o string.o vga.o memory.o paging.o interrupt.o shell.o fs.o text.o console.o mouse.o ata.o math.o auth.o syscall.o gdt.o gdt_flush.o task.o user_entry.o loader.o kernel_shell.o\
+   boot_entry.o kernel.o string.o vga.o memory.o paging.o interrupt.o fs.o console.o mouse.o ata.o math.o auth.o syscall.o gdt.o gdt_flush.o task.o task_asm.o user_entry.o loader.o kernel_shell.o pipe.o\
    -o kernel.bin -nostdlib -e _start
 if [ $? -ne 0 ]; then
     echo "Error: Linking failed!"
@@ -124,20 +123,58 @@ echo "[21/16] Assembling bootloader..."
 nasm -f bin boot.asm -o boot.bin
 if [ $? -ne 0 ]; then echo "Error!"; exit 1; fi
 
-# --- NEW: Compile User Programs ---
-echo "[21a/16] Compiling user programs..."
-
-# Compile hello_user1.c -> hello1.bin
-gcc -m32 -fno-pie -fno-stack-protector -nostdlib -Iinclude -c userspace/hello_user_1.c -o hello_user1.o
-if [ $? -ne 0 ]; then echo "Error compiling hello_user_1.c"; exit 1; fi
-ld -m elf_i386 -T userspace/user.ld -o hello1.bin hello_user1.o
-if [ $? -ne 0 ]; then echo "Error linking hello1.bin"; exit 1; fi
-
 # Compile hello_user.c -> hello2.bin
-gcc -m32 -fno-pie -fno-stack-protector -nostdlib -Iinclude -c userspace/hello_user.c -o hello_user.o
+gcc $USER_CFLAGS -c userspace/hello_user.c -o hello_user.o
 if [ $? -ne 0 ]; then echo "Error compiling hello_user.c"; exit 1; fi
 ld -m elf_i386 -T userspace/user.ld -o hello2.bin hello_user.o
 if [ $? -ne 0 ]; then echo "Error linking hello2.bin"; exit 1; fi
+
+echo "[21b/16] Compiling userspace libc..."
+nasm -f elf32 userspace/libc/src/crt0.asm -o crt0.o
+nasm -f elf32 userspace/libc/src/syscalls.asm -o syscalls_user.o
+gcc $USER_CFLAGS -c userspace/libc/src/string.c -o string_user.o
+gcc $USER_CFLAGS -c userspace/libc/src/stdio.c -o stdio_user.o
+gcc $USER_CFLAGS -c userspace/libc/src/stdlib.c -o stdlib_user.o
+gcc $USER_CFLAGS -c userspace/libc/src/unistd.c -o unistd_user.o
+
+LIBC_OBJS="crt0.o syscalls_user.o string_user.o stdio_user.o stdlib_user.o unistd_user.o"
+
+echo "[21c/16] Compiling shell.prog and text.prog..."
+# Compile objects for userspace
+gcc $USER_CFLAGS -c src/shell.c -o shell_user.o
+if [ $? -ne 0 ]; then echo "Error compiling shell_user.o"; exit 1; fi
+gcc $USER_CFLAGS -c src/text.c -o text_user.o
+if [ $? -ne 0 ]; then echo "Error compiling text_user.o"; exit 1; fi
+gcc $USER_CFLAGS -c src/text_main.c -o text_main_user.o
+if [ $? -ne 0 ]; then echo "Error compiling text_main_user.o"; exit 1; fi
+gcc $USER_CFLAGS -c userspace/clock.c -o clock_user.o
+if [ $? -ne 0 ]; then echo "Error compiling clock_user.o"; exit 1; fi
+# New utilities
+for util in ls mkdir rmdir cat ps kill mem pbash clear pwd echo chmod sudo snake loadbar init zombie_test; do
+    gcc $USER_CFLAGS -c userspace/$util.c -o ${util}_user.o
+    if [ $? -ne 0 ]; then echo "Error compiling ${util}_user.o"; exit 1; fi
+done
+
+# Link shell and text as independent programs
+ld -m elf_i386 -T userspace/user.ld -o shell.prog $LIBC_OBJS shell_user.o
+if [ $? -ne 0 ]; then echo "Error linking shell.prog"; exit 1; fi
+ld -m elf_i386 -T userspace/user.ld -o text.prog $LIBC_OBJS text_main_user.o text_user.o
+if [ $? -ne 0 ]; then echo "Error linking text.prog"; exit 1; fi
+ld -m elf_i386 -T userspace/user.ld -o clock.prog $LIBC_OBJS clock_user.o
+if [ $? -ne 0 ]; then echo "Error linking clock.prog"; exit 1; fi
+
+for util in ls mkdir rmdir cat ps kill mem pbash clear pwd echo chmod sudo snake loadbar init zombie_test; do
+    ld -m elf_i386 -T userspace/user.ld -o $util.prog $LIBC_OBJS ${util}_user.o
+    if [ $? -ne 0 ]; then echo "Error linking $util.prog"; exit 1; fi
+done
+ld -m elf_i386 -T userspace/user.ld -o pbash.prog $LIBC_OBJS pbash_user.o
+if [ $? -ne 0 ]; then echo "Error linking pbash.prog"; exit 1; fi
+
+# Compile and link test_vga
+gcc $USER_CFLAGS -c userspace/test_vga.c -o test_vga.o
+if [ $? -ne 0 ]; then echo "Error compiling test_vga.c"; exit 1; fi
+ld -m elf_i386 -T userspace/user.ld -o test_vga.prog $LIBC_OBJS test_vga.o
+if [ $? -ne 0 ]; then echo "Error linking test_vga.prog"; exit 1; fi
 
 echo "[22/16] Creating OS image..."
 
@@ -191,4 +228,4 @@ echo ""
 
 # Launch QEMU
 echo "Launching QEMU..."
-qemu-system-i386 -drive file=disk.img,format=raw,index=0,media=disk -boot c
+qemu-system-i386 -accel kvm -accel tcg,thread=single -drive file=disk.img,format=raw,index=0,media=disk -boot c

@@ -25,6 +25,7 @@ struct idt_ptr {
 // Interrupt initialization
 void idt_init();
 void pic_init();
+void timer_init(uint32_t frequency);
 
 // Keyboard
 #define KEYBOARD_BUFFER_SIZE 256

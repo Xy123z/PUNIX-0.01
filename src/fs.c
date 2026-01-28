@@ -8,6 +8,7 @@
 #include "../include/memory.h"
 #include "../include/console.h"
 #include "../include/ata.h"
+#include "../include/task.h"
 
 // --- Configuration ---
 #define FS_MAGIC         0xEF5342
@@ -301,8 +302,9 @@ static void mkfs() {
     save_superblock();
 
     // 5. Create initial directories
-    fs_create_node(FS_ROOT_ID, "home", FS_TYPE_DIRECTORY);
-    fs_create_node(FS_ROOT_ID, "a", FS_TYPE_DIRECTORY);
+    fs_create_node(FS_ROOT_ID, "home", FS_TYPE_DIRECTORY, 0, 0);
+    fs_create_node(FS_ROOT_ID, "bin", FS_TYPE_DIRECTORY, 0, 0);
+    fs_create_node(FS_ROOT_ID, "etc", FS_TYPE_DIRECTORY, 0, 0);
 
     console_print_colored("FS: Format complete.\n", COLOR_GREEN_ON_BLACK);
 }
@@ -348,6 +350,26 @@ int fs_update_node(fs_node_t* node) {
     return 1;
 }
 
+int fs_check_permission(inode_t* node, uint32_t uid, uint32_t gid, uint32_t mask) {
+    if (uid == 0) return 1; // Root bypass
+
+    // Owner checks
+    if (uid == node->uid) {
+        if (((node->mode >> 6) & mask) == mask) return 1;
+        return 0; // If owner doesn't have it, we don't fall through to group/others for the owner
+    }
+
+    // Group checks
+    if (gid == node->gid) {
+        if (((node->mode >> 3) & mask) == mask) return 1;
+    }
+
+    // Other checks
+    if ((node->mode & mask) == mask) return 1;
+
+    return 0;
+}
+
 uint32_t fs_find_node_local_id(uint32_t parent_id, char* name) {
     inode_t* parent = cache_load(parent_id);
     if (!parent || parent->type != FS_TYPE_DIRECTORY) return 0;
@@ -369,7 +391,7 @@ uint32_t fs_find_node_local_id(uint32_t parent_id, char* name) {
     return 0;
 }
 
-fs_node_t* fs_find_node(char* path, uint32_t start_id) {
+fs_node_t* fs_find_node(const char* path, uint32_t start_id) {
     if (!path) return 0;
 
     uint32_t current_id = start_id;
@@ -407,6 +429,10 @@ fs_node_t* fs_find_node(char* path, uint32_t start_id) {
                 // Do nothing
             }
             else {
+                fs_node_t* parent = fs_get_node(current_id);
+                if (parent && !fs_check_permission(parent, current_task->uid, current_task->gid, 1)) {
+                    return 0; // Permission denied
+                }
                 uint32_t next_id = fs_find_node_local_id(current_id, component);
                 if (next_id == 0) return 0;
                 current_id = next_id;
@@ -420,7 +446,7 @@ fs_node_t* fs_find_node(char* path, uint32_t start_id) {
     return fs_get_node(current_id);  // Lazy load final node
 }
 
-int fs_create_node(uint32_t parent_id, char* name, uint8_t type) {
+int fs_create_node(uint32_t parent_id, char* name, uint8_t type, uint32_t uid, uint32_t gid) {
     if (sb.free_inodes == 0) {
         console_print_colored("FS: Disk full (inodes).\n", COLOR_LIGHT_RED);
         return 0;
@@ -472,6 +498,14 @@ int fs_create_node(uint32_t parent_id, char* name, uint8_t type) {
     node.type = type;
     node.mode = (type == FS_TYPE_DIRECTORY) ? 0755 : 0644;
     node.link_count = 1;
+    node.uid = uid;
+    node.gid = gid;
+    node.mode = (type == FS_TYPE_DIRECTORY) ? 0755 : 0644;
+    // Special case: if parent is set-gid, inherit gid and set set-gid bit
+    if (parent->mode & 02000) {
+        node.gid = parent->gid;
+        if (type == FS_TYPE_DIRECTORY) node.mode |= 02000;
+    }
     
     // Save new inode
     uint8_t buf[SECTOR_SIZE];
@@ -535,9 +569,21 @@ int fs_delete_node(uint32_t id) {
             node->blocks[i] = 0;
         }
     }
-    // TODO: Free indirect blocks
 
-    // 4. Free the inode
+    // 4. Free indirect blocks
+    if (node->indirect_block != 0) {
+        uint32_t indices[SECTOR_SIZE / sizeof(uint32_t)];
+        ata_read_sectors(node->indirect_block, 1, indices);
+        for (int i = 0; i < (SECTOR_SIZE / sizeof(uint32_t)); i++) {
+            if (indices[i] != 0) {
+                block_free(indices[i]);
+            }
+        }
+        block_free(node->indirect_block);
+        node->indirect_block = 0;
+    }
+
+    // 5. Free the inode
     bitmap_set(FS_INODE_BITMAP_SECTOR, id, 0);
     sb.free_inodes++;
     save_superblock();
@@ -585,7 +631,20 @@ int fs_read(inode_t* node, uint32_t offset, uint32_t size, uint8_t* buffer) {
         uint32_t to_read = SECTOR_SIZE - block_off;
         if (to_read > (size - read_count)) to_read = size - read_count;
 
-        uint32_t b_id = (block_idx < 12) ? node->blocks[block_idx] : 0;
+        uint32_t b_id = 0;
+        if (block_idx < 12) {
+            b_id = node->blocks[block_idx];
+        } else {
+            if (node->indirect_block != 0) {
+                uint32_t indices[SECTOR_SIZE / sizeof(uint32_t)];
+                ata_read_sectors(node->indirect_block, 1, indices);
+                uint32_t indirect_idx = block_idx - 12;
+                if (indirect_idx < (SECTOR_SIZE / sizeof(uint32_t))) {
+                    b_id = indices[indirect_idx];
+                }
+            }
+        }
+
         if (b_id == 0) break;
 
         ata_read_sectors(b_id, 1, sector_buf);
@@ -607,19 +666,49 @@ int fs_write(inode_t* node, uint32_t offset, uint32_t size, uint8_t* buffer) {
         uint32_t to_write = SECTOR_SIZE - block_off;
         if (to_write > (size - write_count)) to_write = size - write_count;
 
-        if (block_idx >= 12) {
-            console_print_colored("FS: File too large (direct-only).\n", COLOR_LIGHT_RED);
-            break;
+        uint32_t b_id = 0;
+        if (block_idx < 12) {
+            if (node->blocks[block_idx] == 0) {
+                b_id = block_alloc();
+                if (b_id == 0) break;
+                node->blocks[block_idx] = b_id;
+                node->block_count++;
+            } else {
+                b_id = node->blocks[block_idx];
+            }
+        } else {
+            // Indirect block logic
+            uint32_t indirect_idx = block_idx - 12;
+            if (indirect_idx >= (SECTOR_SIZE / sizeof(uint32_t))) {
+                console_print_colored("FS: File too large (max limit reached).\n", COLOR_LIGHT_RED);
+                break;
+            }
+
+            if (node->indirect_block == 0) {
+                uint32_t ind_id = block_alloc();
+                if (ind_id == 0) break;
+                node->indirect_block = ind_id;
+                // Zero out the indirect block sector
+                uint8_t zero[SECTOR_SIZE];
+                memset(zero, 0, SECTOR_SIZE);
+                ata_write_sectors(ind_id, 1, zero);
+            }
+
+            uint32_t indices[SECTOR_SIZE / sizeof(uint32_t)];
+            ata_read_sectors(node->indirect_block, 1, indices);
+            if (indices[indirect_idx] == 0) {
+                b_id = block_alloc();
+                if (b_id == 0) break;
+                indices[indirect_idx] = b_id;
+                node->block_count++;
+                ata_write_sectors(node->indirect_block, 1, indices);
+            } else {
+                b_id = indices[indirect_idx];
+            }
         }
 
-        if (node->blocks[block_idx] == 0) {
-            uint32_t b_id = block_alloc();
-            if (b_id == 0) break;
-            node->blocks[block_idx] = b_id;
-            node->block_count++;
-        }
+        if (b_id == 0) break;
 
-        uint32_t b_id = node->blocks[block_idx];
         if (to_write < SECTOR_SIZE) {
             ata_read_sectors(b_id, 1, sector_buf);
         }
@@ -664,4 +753,36 @@ int fs_get_inode_name(uint32_t id, char* buffer) {
     }
 
     return 0;
+}
+
+void fs_get_full_path(uint32_t id, char* buffer) {
+    if (id == FS_ROOT_ID) {
+        strcpy(buffer, "/");
+        return;
+    }
+
+    char components[10][FS_MAX_NAME];
+    int count = 0;
+    uint32_t current_id = id;
+
+    while (current_id != FS_ROOT_ID && count < 10) {
+        char name[FS_MAX_NAME];
+        if (fs_get_inode_name(current_id, name)) {
+            strcpy(components[count++], name);
+            inode_t* node = cache_load(current_id);
+            if (node) {
+                current_id = node->parent_id;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    strcpy(buffer, "");
+    for (int i = count - 1; i >= 0; i--) {
+        strcat(buffer, "/");
+        strcat(buffer, components[i]);
+    }
 }

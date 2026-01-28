@@ -15,7 +15,11 @@
 // Physical memory manager
 void pmm_init();
 void* pmm_alloc_page();
+void* pmm_alloc_pages(uint32_t count);
 void pmm_free_page(void* addr);
+void pmm_ref_page(void* addr);
+void pmm_unref_page(void* addr);
+uint32_t pmm_get_ref(void* addr);
 void pmm_get_stats(uint32_t* total, uint32_t* used, uint32_t* free);
 
 // Heap allocator

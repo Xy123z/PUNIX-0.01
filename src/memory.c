@@ -8,6 +8,7 @@ typedef unsigned int size_t;
 typedef int int32_t;
 // Physical memory bitmap
 static uint32_t page_bitmap[TOTAL_PAGES / 32];
+static uint32_t page_ref_count[TOTAL_PAGES]; // New: Reference counting for COW
 static uint32_t used_pages = 0;
 static uint32_t free_pages = TOTAL_PAGES;
 
@@ -27,6 +28,9 @@ static heap_block_t* heap_start = 0;
 void pmm_init() {
     for (uint32_t i = 0; i < TOTAL_PAGES / 32; i++) {
         page_bitmap[i] = 0;
+    }
+    for (uint32_t i = 0; i < TOTAL_PAGES; i++) {
+        page_ref_count[i] = 0;
     }
     used_pages = 0;
     free_pages = TOTAL_PAGES;
@@ -59,26 +63,50 @@ static uint32_t pmm_find_free_page() {
     return (uint32_t)-1;
 }
 
-void* pmm_alloc_page() {
-    uint32_t page = pmm_find_free_page();
+static uint32_t pmm_find_free_pages(uint32_t count) {
+    if (count == 0) return (uint32_t)-1;
+    if (count == 1) return pmm_find_free_page();
+
+    for (uint32_t i = 0; i <= TOTAL_PAGES - count; i++) {
+        int found = 1;
+        for (uint32_t j = 0; j < count; j++) {
+            if (pmm_test_page(i + j)) {
+                found = 0;
+                break;
+            }
+        }
+        if (found) return i;
+    }
+    return (uint32_t)-1;
+}
+
+void* pmm_alloc_pages(uint32_t count) {
+    uint32_t page = pmm_find_free_pages(count);
 
     if (page == (uint32_t)-1) {
         return 0;
     }
 
-    pmm_set_page(page);
-    used_pages++;
-    free_pages--;
+    for (uint32_t i = 0; i < count; i++) {
+        pmm_set_page(page + i);
+        page_ref_count[page + i] = 1; // Initial refcount is 1
+    }
+    used_pages += count;
+    free_pages -= count;
 
     uint32_t addr = KERNEL_END + (page * PAGE_SIZE);
 
-    // Zero out the page
+    // Zero out the pages
     uint32_t* ptr = (uint32_t*)addr;
-    for (int i = 0; i < PAGE_SIZE / 4; i++) {
+    for (uint32_t i = 0; i < (count * PAGE_SIZE) / 4; i++) {
         ptr[i] = 0;
     }
 
     return (void*)addr;
+}
+
+void* pmm_alloc_page() {
+    return pmm_alloc_pages(1);
 }
 
 void pmm_free_page(void* addr) {
@@ -89,14 +117,36 @@ void pmm_free_page(void* addr) {
     }
 
     uint32_t page = (page_addr - KERNEL_END) / PAGE_SIZE;
+    if (!pmm_test_page(page)) return;
 
-    if (!pmm_test_page(page)) {
+    if (page_ref_count[page] > 1) {
+        page_ref_count[page]--;
         return;
     }
 
+    page_ref_count[page] = 0;
     pmm_clear_page(page);
     used_pages--;
     free_pages++;
+}
+
+void pmm_ref_page(void* addr) {
+    uint32_t page_addr = (uint32_t)addr;
+    if (page_addr < KERNEL_END || page_addr >= MEMORY_END) return;
+    uint32_t page = (page_addr - KERNEL_END) / PAGE_SIZE;
+    if (!pmm_test_page(page)) return;
+    page_ref_count[page]++;
+}
+
+void pmm_unref_page(void* addr) {
+    pmm_free_page(addr);
+}
+
+uint32_t pmm_get_ref(void* addr) {
+    uint32_t page_addr = (uint32_t)addr;
+    if (page_addr < KERNEL_END || page_addr >= MEMORY_END) return 0;
+    uint32_t page = (page_addr - KERNEL_END) / PAGE_SIZE;
+    return page_ref_count[page];
 }
 
 void pmm_get_stats(uint32_t* total, uint32_t* used, uint32_t* free) {
@@ -140,11 +190,12 @@ void* kmalloc(size_t size) {
     heap_block_t* block = heap_find_block(size);
 
     if (!block) {
-        void* new_page = pmm_alloc_page();
-        if (!new_page) return 0;
+        uint32_t pages_needed = (size + sizeof(heap_block_t) + PAGE_SIZE - 1) / PAGE_SIZE;
+        void* new_pages = pmm_alloc_pages(pages_needed);
+        if (!new_pages) return 0;
 
-        block = (heap_block_t*)new_page;
-        block->size = PAGE_SIZE - sizeof(heap_block_t);
+        block = (heap_block_t*)new_pages;
+        block->size = (pages_needed * PAGE_SIZE) - sizeof(heap_block_t);
         block->is_free = 1;
         block->next = 0;
 

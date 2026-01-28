@@ -11,75 +11,58 @@
 #include "../include/string.h"
 #include "../include/memory.h"
 #include "../include/ata.h"
+#include "../include/paging.h"
 
 #include "../include/auth.h"
 #include "../include/task.h"
+#include "../include/loader.h"
+#include "../include/pipe.h"
 uint32_t kernel_esp_saved;
 extern void kernel_after_user(void);
-// File descriptor table (simplified - single process for now)
-#define MAX_FDS 16
-typedef struct {
-    uint32_t node_id;        // Filesystem node ID
-    uint32_t offset;         // Current read/write position
-    uint8_t  flags;          // Open flags
-    uint8_t  in_use;         // 1 if FD is allocated
-} file_descriptor_t;
+// File descriptor table is now per-process (current_task->fd_table)
 
-static file_descriptor_t fd_table[MAX_FDS];
-
-// Current working directory (global for now)
-static uint32_t current_cwd = 0;
+// Current working directory is now per-process (current_task->cwd_id)
 __attribute__((noreturn))
 void sys_exit_impl(uint32_t status) {
-    console_print_colored("\nProcess exited with code: ", COLOR_LIGHT_CYAN);
-    char status_str[12];
-    int_to_str(status, status_str);
-    console_print_colored(status_str, COLOR_LIGHT_CYAN);
-    console_print("\nreturned to kernel context\n");
-
-    extern void kern_shell_init();
-
-    // Restore kernel stack and jump to shell
-    __asm__ volatile(
-         "mov %0, %%esp\n"
-         "jmp kern_shell_init\n"
-         :
-         : "m"(kernel_esp_saved)
-         : "memory"
-    );
-
-    __builtin_unreachable();
+    // Use task subsystem for proper exit handling
+    task_exit((int)status);
+    
+    // Should not reach here, but if it does, halt
+    while(1) __asm__ volatile("hlt");
 }
 /**
  * @brief Initialize file descriptor table and task management
  */
 void syscall_init() {
-    // Clear FD table
-    for (int i = 0; i < MAX_FDS; i++) {
-        fd_table[i].in_use = 0;
-    }
-    
     // Initialize task management
     task_init();
     
     // Default to root if not set
-    current_cwd = fs_root_id;
+    if (current_task) current_task->cwd_id = fs_root_id;
+}
+
+static int check_permission(fs_node_t* node, uint32_t mask) {
+    if (!current_task || !node) return 0;
+    return fs_check_permission(node, current_task->uid, current_task->gid, mask);
 }
 
 void syscall_set_cwd(uint32_t id) {
-    current_cwd = id;
+    if (current_task) current_task->cwd_id = id;
 }
 
 /**
  * @brief Allocate a file descriptor
  */
 static int allocate_fd(uint32_t node_id, uint8_t flags) {
+    if (!current_task) return -1;
     for (int i = 0; i < MAX_FDS; i++) {
-        if (!fd_table[i].in_use) {
-            fd_table[i].node_id = node_id;
-            fd_table[i].offset = 0;
-            fd_table[i].flags = flags;
-            fd_table[i].in_use = 1;
+        if (!current_task->fd_table[i].in_use) {
+            current_task->fd_table[i].type = FD_TYPE_FILE;
+            current_task->fd_table[i].ptr = 0;
+            current_task->fd_table[i].node_id = node_id;
+            current_task->fd_table[i].offset = 0;
+            current_task->fd_table[i].flags = flags;
+            current_task->fd_table[i].in_use = 1;
             return i;
         }
     }
@@ -89,9 +72,29 @@ static int allocate_fd(uint32_t node_id, uint8_t flags) {
 /**
  * @brief Free a file descriptor
  */
-static void free_fd(int fd) {
-    if (fd >= 0 && fd < MAX_FDS) {
-        fd_table[fd].in_use = 0;
+void syscall_free_fd(task_t* task, int fd) {
+    if (task && fd >= 0 && fd < MAX_FDS) {
+        if (task->fd_table[fd].in_use) {
+            if (task->fd_table[fd].type == FD_TYPE_PIPE) {
+                pipe_t* p = (pipe_t*)task->fd_table[fd].ptr;
+                if ((task->fd_table[fd].flags & 1) == O_RDONLY) p->readers--;
+                else if ((task->fd_table[fd].flags & 1) == O_WRONLY) p->writers--;
+                
+                if (p->readers == 0 && p->writers == 0) {
+                    pipe_destroy(p);
+                }
+            } else if (task->fd_table[fd].type == FD_TYPE_TTY) {
+               // TTYs are usually shared or persistent
+            }
+            task->fd_table[fd].in_use = 0;
+        }
+    }
+}
+
+void syscall_close_all(task_t* task) {
+    if (!task) return;
+    for (int i = 0; i < MAX_FDS; i++) {
+        syscall_free_fd(task, i);
     }
 }
 
@@ -109,9 +112,13 @@ static void free_fd(int fd) {
  *
  * Return value in EAX
  */
-uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
-                     uint32_t edx, uint32_t esi, uint32_t edi) {
-    uint32_t syscall_num = eax;
+uint32_t syscall_handler(registers_t* regs) {
+    uint32_t syscall_num = regs->eax;
+    uint32_t ebx = regs->ebx;
+    uint32_t ecx = regs->ecx;
+    uint32_t edx = regs->edx;
+    uint32_t esi = regs->esi;
+    uint32_t edi = regs->edi;
     uint32_t ret = 0;
 
     switch (syscall_num) {
@@ -163,15 +170,54 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             break;
         }
 
+        case SYS_GET_MEM_STATS: {
+            pmm_get_stats((uint32_t*)ebx, (uint32_t*)ecx, (uint32_t*)edx);
+            ret = 0;
+            break;
+        }
+
+        case SYS_STAT: {
+            // sys_stat(const char* path, struct stat* buf)
+            char* path = (char*)ebx;
+            struct_stat_t* buf = (struct_stat_t*)ecx;
+            fs_node_t* node = fs_find_node(path, current_task->cwd_id);
+            if (!node) {
+                ret = -1;
+            } else {
+                buf->st_ino = node->id;
+                buf->st_mode = node->mode;
+                buf->st_uid = node->uid;
+                buf->st_gid = node->gid;
+                buf->st_size = node->size;
+                buf->st_atime = node->atime;
+                buf->st_mtime = node->mtime;
+                buf->st_ctime = node->ctime;
+                buf->st_type = node->type;
+                ret = 0;
+            }
+            break;
+        }
+
         case SYS_OPEN: {
             // sys_open(const char* path, int flags)
             char* path = (char*)ebx;
             uint8_t flags = (uint8_t)ecx;
 
-            fs_node_t* node = fs_find_node(path, current_cwd);
+            fs_node_t* node = fs_find_node(path, current_task->cwd_id);
             if (!node) {
                 ret = -1;  // File not found
             } else {
+                // Permission check
+                uint32_t mask = 0;
+                if (flags == O_RDONLY) mask = 4;
+                else if (flags == O_WRONLY) mask = 2;
+                else if (flags == O_RDWR) mask = 6;
+                
+                if (!check_permission(node, mask)) {
+                    ret = -1; // Permission denied
+                    break;
+                }
+
                 int fd = allocate_fd(node->id, flags);
                 ret = fd;
             }
@@ -184,21 +230,32 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             char* buf = (char*)ecx;
             uint32_t count = edx;
 
-            if (fd < 0 || fd >= MAX_FDS || !fd_table[fd].in_use) {
+            if (fd < 0 || fd >= MAX_FDS || !current_task->fd_table[fd].in_use) {
                 ret = -1;
                 break;
             }
 
-            fs_node_t* node = fs_get_node(fd_table[fd].node_id);
+            if (current_task->fd_table[fd].type == FD_TYPE_TTY) {
+                extern int tty_read(void* tty, char* buf, int count);
+                ret = tty_read(current_task->fd_table[fd].ptr, buf, count);
+                break;
+            }
+
+            if (current_task->fd_table[fd].type == FD_TYPE_PIPE) {
+                ret = pipe_read((pipe_t*)current_task->fd_table[fd].ptr, (uint8_t*)buf, count);
+                break;
+            }
+
+            fs_node_t* node = fs_get_node(current_task->fd_table[fd].node_id);
             if (!node) {
                 ret = -1;
                 break;
             }
 
-            uint32_t offset = fd_table[fd].offset;
+            uint32_t offset = current_task->fd_table[fd].offset;
             uint32_t bytes_read = fs_read(node, offset, count, (uint8_t*)buf);
 
-            fd_table[fd].offset += bytes_read;
+            current_task->fd_table[fd].offset += bytes_read;
             ret = bytes_read;
             break;
         }
@@ -209,21 +266,32 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             const char* buf = (const char*)ecx;
             uint32_t count = edx;
 
-            if (fd < 0 || fd >= MAX_FDS || !fd_table[fd].in_use) {
+            if (fd < 0 || fd >= MAX_FDS || !current_task->fd_table[fd].in_use) {
                 ret = -1;
                 break;
             }
 
-            fs_node_t* node = fs_get_node(fd_table[fd].node_id);
+            if (current_task->fd_table[fd].type == FD_TYPE_TTY) {
+                extern int tty_write(void* tty, const char* buf, int count);
+                ret = tty_write(current_task->fd_table[fd].ptr, buf, count);
+                break;
+            }
+
+            if (current_task->fd_table[fd].type == FD_TYPE_PIPE) {
+                ret = pipe_write((pipe_t*)current_task->fd_table[fd].ptr, (uint8_t*)buf, count);
+                break;
+            }
+
+            fs_node_t* node = fs_get_node(current_task->fd_table[fd].node_id);
             if (!node) {
                 ret = -1;
                 break;
             }
 
-            uint32_t offset = fd_table[fd].offset;
+            uint32_t offset = current_task->fd_table[fd].offset;
             uint32_t bytes_written = fs_write(node, offset, count, (uint8_t*)buf);
 
-            fd_table[fd].offset += bytes_written;
+            current_task->fd_table[fd].offset += bytes_written;
             ret = bytes_written;
             break;
         }
@@ -231,7 +299,7 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
         case SYS_CLOSE: {
             // sys_close(int fd)
             int fd = (int)ebx;
-            free_fd(fd);
+            syscall_free_fd(current_task, fd);
             ret = 0;
             break;
         }
@@ -279,6 +347,22 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
                 break;
             }
             current_task->uid = ebx;
+            ret = 0;
+            break;
+        }
+
+        case SYS_GETGID: {
+            ret = current_task->gid;
+            break;
+        }
+
+        case SYS_SETGID: {
+            // sys_setgid(uint32_t gid)
+            if (current_task->uid != 0) {
+                ret = -1;
+                break;
+            }
+            current_task->gid = ebx;
             ret = 0;
             break;
         }
@@ -336,18 +420,8 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             char* buf = (char*)ebx;
             if (!buf) { ret = -1; break; }
 
-            char name[FS_MAX_NAME];
-            if (fs_get_inode_name(current_cwd, name)) {
-                if (current_cwd == fs_root_id) {
-                    strcpy(buf, "/");
-                } else {
-                    strcpy(buf, "/");
-                    strcat(buf, name);
-                }
-                ret = 0;
-            } else {
-                ret = -1;
-            }
+            fs_get_full_path(current_task->cwd_id, buf);
+            ret = 0;
             break;
         }
 
@@ -355,9 +429,14 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             // sys_chdir(const char* path)
             char* path = (char*)ebx;
 
-            fs_node_t* target = fs_find_node(path, current_cwd);
+            fs_node_t* target = fs_find_node(path, current_task->cwd_id);
             if (target && target->type == FS_TYPE_DIRECTORY) {
-                current_cwd = target->id;
+                // Check execute permission for directory
+                if (!check_permission(target, 1)) {
+                    ret = -1;
+                    break;
+                }
+                current_task->cwd_id = target->id;
                 ret = 0;
             } else {
                 ret = -1;
@@ -368,16 +447,16 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
         case SYS_MKDIR: {
             // sys_mkdir(const char* path)
             char* path = (char*)ebx;
-            char parent_path[128];
+            char parent_path[MAX_PATH];
             char name[FS_MAX_NAME];
             
-            // Resolve parent and name
+            // Resolve parent and name correctly
             char* last_slash = strrchr(path, '/');
             if (last_slash) {
-                int len = last_slash - path;
-                if (len == 0) { // Root mkdir
+                if (last_slash == path) { // Root mkdir e.g. /test
                     strcpy(parent_path, "/");
                 } else {
+                    int len = last_slash - path;
                     strncpy(parent_path, path, len);
                     parent_path[len] = '\0';
                 }
@@ -387,9 +466,13 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
                 strcpy(name, path);
             }
 
-            fs_node_t* parent = fs_find_node(parent_path, current_cwd);
+            fs_node_t* parent = fs_find_node(parent_path, current_task->cwd_id);
             if (parent && parent->type == FS_TYPE_DIRECTORY) {
-                if (fs_create_node(parent->id, name, FS_TYPE_DIRECTORY)) {
+                if (!check_permission(parent, 2)) {
+                    ret = -1;
+                    break;
+                }
+                if (fs_create_node(parent->id, name, FS_TYPE_DIRECTORY, current_task->uid, 0)) {
                     ret = 0;
                 } else {
                     ret = -1;
@@ -404,8 +487,15 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             // sys_rmdir(const char* path)
             char* path = (char*)ebx;
 
-            fs_node_t* target = fs_find_node(path, current_cwd);
+            fs_node_t* target = fs_find_node(path, current_task->cwd_id);
             if (target && target->type == FS_TYPE_DIRECTORY) {
+                // Ensure we have write permission on the target directory's parent
+                fs_node_t* parent = fs_get_node(target->parent_id);
+                if (parent && !check_permission(parent, 2)) {
+                    ret = -1;
+                    break;
+                }
+                
                 if (fs_delete_node(target->id)) {
                     ret = 0;
                 } else {
@@ -414,6 +504,31 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             } else {
                 ret = -1;
             }
+            break;
+        }
+
+        case SYS_UNLINK: {
+            char* path = (char*)ebx;
+            fs_node_t* target = fs_find_node(path, current_task->cwd_id);
+            if (target && target->type == FS_TYPE_FILE) {
+                fs_node_t* parent = fs_get_node(target->parent_id);
+                if (parent && !check_permission(parent, 2)) {
+                    ret = -1;
+                    break;
+                }
+                if (fs_delete_node(target->id)) {
+                    ret = 0;
+                } else {
+                    ret = -1;
+                }
+            } else {
+                ret = -1;
+            }
+            break;
+        }
+
+        case SYS_GETPID: {
+            ret = current_task->id;
             break;
         }
 
@@ -438,9 +553,14 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
                 strcpy(name, path);
             }
 
-            fs_node_t* parent = fs_find_node(parent_path, current_cwd);
+            fs_node_t* parent = fs_find_node(parent_path, current_task->cwd_id);
             if (parent && parent->type == FS_TYPE_DIRECTORY) {
-                if (fs_create_node(parent->id, name, FS_TYPE_FILE)) {
+                // Check write permission on parent directory
+                if (!check_permission(parent, 2)) {
+                    ret = -1;
+                    break;
+                }
+                if (fs_create_node(parent->id, name, FS_TYPE_FILE, current_task->uid, 0)) {
                     ret = 0;
                 } else {
                     ret = -1;
@@ -456,7 +576,7 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             struct dirent* dirents = (struct dirent*)ecx;
             int max_count = (int)edx;
 
-            fs_node_t* dir = fs_find_node(path, current_cwd);
+            fs_node_t* dir = fs_find_node(path, current_task->cwd_id);
             if (!dir || dir->type != FS_TYPE_DIRECTORY) {
                 ret = -1;
                 break;
@@ -503,6 +623,215 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             break;
         }
 
+        case SYS_EXEC: {
+            console_print("Syscall: EXEC ");
+            console_print((const char*)ebx);
+            console_print("\n");
+            
+            char* path = (char*)ebx;
+            char** argv = (char**)ecx;
+
+            fs_node_t* node = fs_find_node(path, current_task->cwd_id);
+            if (!node || !check_permission(node, 1)) {
+                ret = -1; // Permission denied or not found
+                break;
+            }
+
+            // Count argc (argv is NULL terminated)
+            int argc = 0;
+            if (argv) {
+                while (argv[argc] != NULL) argc++;
+            }
+
+            task_t* task = load_user_program(current_task, path, argc, argv);
+            if (task) {
+                task_run(task);
+                ret = 0;
+            } else {
+                ret = -1;
+            }
+            break;
+        }
+
+        case SYS_FORK: {
+            // Fork the current process
+            task_t* child = task_fork(regs);
+            if (!child) {
+                ret = -1;  // Fork failed
+            } else {
+                // Parent gets child PID
+                ret = child->id;
+                // Child will get 0 (set in task_fork)
+                
+                // Don't call task_run here - let scheduler handle it
+                child->state = TASK_READY;
+            }
+            break;
+        }
+
+        case SYS_GET_PROCS: {
+            ret = task_get_procs((proc_info_t*)ebx, (int)ecx);
+            break;
+        }
+
+        case SYS_KILL: {
+            ret = task_kill((uint32_t)ebx);
+            break;
+        }
+
+        case SYS_SLEEP: {
+            task_sleep(ebx);
+            ret = 0;
+            break;
+        }
+
+        case SYS_GET_TICKS: {
+            extern uint32_t timer_ticks;
+            ret = timer_ticks;
+            break;
+        }
+
+        case SYS_KBHIT: {
+            extern int keyboard_has_data();
+            ret = keyboard_has_data();
+            break;
+        }
+
+        case SYS_WAIT: {
+            ret = task_wait(ebx, (int*)ecx);
+            break;
+        }
+
+        case SYS_GET_USERNAME: {
+            char* buf = (char*)ebx;
+            uint32_t size = ecx;
+            extern char USERNAME[MAX_USERNAME_LEN];
+            strncpy(buf, USERNAME, size - 1);
+            buf[size - 1] = '\0';
+            ret = 0;
+            break;
+        }
+
+        case SYS_CHMOD: {
+            // sys_chmod(const char* path, uint32_t mode)
+            char* path = (char*)ebx;
+            uint32_t mode = ecx;
+            fs_node_t* node = fs_find_node(path, current_task->cwd_id);
+            if (!node) {
+                ret = -1;
+            } else {
+                // Only owner or root can chmod
+                if (current_task->uid != 0 && current_task->uid != node->uid) {
+                    ret = -1;
+                } else {
+                    node->mode = mode;
+                    fs_update_node(node);
+                    ret = 0;
+                }
+            }
+            break;
+        }
+
+        case SYS_DUP2: {
+            // sys_dup2(int oldfd, int newfd)
+            int oldfd = (int)ebx;
+            int newfd = (int)ecx;
+            if (oldfd < 0 || oldfd >= MAX_FDS || newfd < 0 || newfd >= MAX_FDS) {
+                ret = -1;
+                break;
+            }
+            if (!current_task->fd_table[oldfd].in_use) {
+                ret = -1;
+                break;
+            }
+            if (oldfd == newfd) {
+                ret = newfd;
+                break;
+            }
+            // If newfd is in use, close it (simplified, just mark not in use)
+            // Note: In a real dup2, we should call close(newfd) first.
+            if (current_task->fd_table[newfd].in_use) {
+                syscall_free_fd(current_task, newfd);
+            }
+
+            current_task->fd_table[newfd] = current_task->fd_table[oldfd];
+            
+            // Reference counting for pipes
+            if (current_task->fd_table[newfd].type == FD_TYPE_PIPE) {
+                pipe_t* p = (pipe_t*)current_task->fd_table[newfd].ptr;
+                if ((current_task->fd_table[newfd].flags & 1) == O_RDONLY) p->readers++;
+                else if ((current_task->fd_table[newfd].flags & 1) == O_WRONLY) p->writers++;
+            }
+
+            ret = newfd;
+            break;
+        }
+
+        case SYS_PIPE: {
+            // sys_pipe(int pipefd[2])
+            int* pipefd = (int*)ebx;
+            pipe_t* p = pipe_create();
+            if (!p) {
+                ret = -1;
+                break;
+            }
+            
+            int pr = -1, pw = -1;
+            for (int i = 0; i < MAX_FDS; i++) {
+                if (!current_task->fd_table[i].in_use) {
+                    if (pr == -1) pr = i;
+                    else if (pw == -1) { pw = i; break; }
+                }
+            }
+            
+            if (pr == -1 || pw == -1) {
+                pipe_destroy(p);
+                ret = -1;
+                break;
+            }
+            
+            // Set up read end
+            current_task->fd_table[pr].in_use = 1;
+            current_task->fd_table[pr].type = FD_TYPE_PIPE;
+            current_task->fd_table[pr].ptr = p;
+            current_task->fd_table[pr].flags = O_RDONLY;
+            
+            // Set up write end
+            current_task->fd_table[pw].in_use = 1;
+            current_task->fd_table[pw].type = FD_TYPE_PIPE;
+            current_task->fd_table[pw].ptr = p;
+            current_task->fd_table[pw].flags = O_WRONLY;
+            
+            pipefd[0] = pr;
+            pipefd[1] = pw;
+            ret = 0;
+            break;
+        }
+
+        case SYS_DRAW_CHAR_AT: {
+            // sys_draw_char_at(int x, int y, char c, char color)
+            extern void console_draw_char_at(int x, int y, char c, char color);
+            console_draw_char_at((int)ebx, (int)ecx, (char)edx, (char)esi);
+            ret = 0;
+            break;
+        }
+
+        case SYS_DRAW_STRING_AT: {
+            // sys_draw_string_at(int x, int y, const char* str, char color)
+            extern void console_draw_string_at(int x, int y, const char* str, char color);
+            console_draw_string_at((int)ebx, (int)ecx, (const char*)edx, (char)esi);
+            ret = 0;
+            break;
+        }
+
+        case SYS_UPDATE_CURSOR: {
+            // sys_update_cursor(int x, int y)
+            extern void console_update_cursor(int x, int y);
+            console_update_cursor((int)ebx, (int)ecx);
+            ret = 0;
+            break;
+        }
+
         default:
             console_print("Unknown syscall: ");
             char num[12];
@@ -513,42 +842,38 @@ uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
             break;
     }
 
-    // Return value naturally goes in EAX via C calling convention
+    // Return value goes in EAX naturally via C calling convention
     return ret;
 }
 
 // Assembly wrapper for system call interrupt
-// CRITICAL: We must NOT save/restore EAX because it holds the return value
 __asm__(
     ".global syscall_interrupt_wrapper\n"
     "syscall_interrupt_wrapper:\n"
-    // Save registers that we'll clobber (but NOT EAX - it will hold return value)
-    "   push %ebx\n"
-    "   push %ecx\n"
-    "   push %edx\n"
-    "   push %esi\n"
-    "   push %edi\n"
-    "   push %ebp\n"
+    "   cli\n"
+    "   pusha\n"            // Push EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX
+    "   push %ds\n"
+    "   push %es\n"
+    "   push %fs\n"
+    "   push %gs\n"
     
-    // Push arguments for syscall_handler in REVERSE order (cdecl convention)
-    // syscall_handler(eax, ebx, ecx, edx, esi, edi)
-    "   push %edi\n"                // arg6
-    "   push %esi\n"                // arg5
-    "   push %edx\n"                // arg4
-    "   push %ecx\n"                // arg3
-    "   push %ebx\n"                // arg2
-    "   push %eax\n"                // arg1 (syscall number)
+    "   mov $0x10, %ax\n"   // Kernel data segment
+    "   mov %ax, %ds\n"
+    "   mov %ax, %es\n"
+    "   mov %ax, %fs\n"
+    "   mov %ax, %gs\n"
     
-    "   call syscall_handler\n"     // Call C handler, return value in EAX
-    "   add $24, %esp\n"            // Clean up 6 arguments (6 * 4 = 24 bytes)
+    "   push %esp\n"        // Pass pointer to registers_t
+    "   call syscall_handler\n"
+    "   add $4, %esp\n"     // Clean up pointer
     
-    // Restore registers (but NOT EAX - it has the return value!)
-    "   pop %ebp\n"
-    "   pop %edi\n"
-    "   pop %esi\n"
-    "   pop %edx\n"
-    "   pop %ecx\n"
-    "   pop %ebx\n"
+    "   mov %eax, 44(%esp)\n" // Store return value in EAX slot of registers_t on stack
+                            // registers_t: gs(0), fs(4), es(8), ds(12), edi(16), esi(20), ebp(24), esp_dummy(28), ebx(32), edx(36), ecx(40), eax(44)
     
-    "   iret\n"                     // Return to user code with EAX = return value
+    "   pop %gs\n"
+    "   pop %fs\n"
+    "   pop %es\n"
+    "   pop %ds\n"
+    "   popa\n"
+    "   iret\n"
 );

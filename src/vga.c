@@ -102,3 +102,18 @@ void vga_clear_screen() {
     vga_cursor_x = 0;
     vga_cursor_y = 0;
 }
+
+// --- Overlay Drawing Functions ---
+void vga_draw_char_at(int x, int y, char c, char color) {
+    if (x < 0 || x >= VGA_WIDTH || y < 0 || y >= VGA_HEIGHT) return;
+    int offset = 2 * (y * VGA_WIDTH + x);
+    vga_buffer[offset] = c;
+    vga_buffer[offset+1] = color;
+}
+
+void vga_draw_string_at(int x, int y, const char* str, char color) {
+    for (int i = 0; str[i] != '\0'; i++) {
+        vga_draw_char_at(x + i, y, str[i], color);
+    }
+}
+

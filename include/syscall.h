@@ -4,7 +4,10 @@
 #define SYSCALL_H
 
 #include "types.h"
+#include "task.h"
 extern uint32_t kernel_esp_saved;
+
+#define MAX_PATH 256
 
 // Directory entry structure
 struct dirent {
@@ -12,6 +15,18 @@ struct dirent {
     uint8_t  d_type;          // File type
     char     d_name[64];      // Filename
 };
+
+typedef struct {
+    uint32_t st_ino;
+    uint32_t st_mode;
+    uint32_t st_uid;
+    uint32_t st_gid;
+    uint32_t st_size;
+    uint32_t st_atime;
+    uint32_t st_mtime;
+    uint32_t st_ctime;
+    uint8_t  st_type;
+} struct_stat_t;
 
 // System call numbers (for reference)
 #define SYS_READ         0
@@ -50,12 +65,31 @@ struct dirent {
 #define SYS_AUTHENTICATE 28
 #define SYS_SHUTDOWN     29
 #define SYS_RESTART      30
+#define SYS_GET_MEM_STATS 31
+#define SYS_EXEC         32
+#define SYS_FORK         33
+#define SYS_GET_PROCS    34
+#define SYS_KILL         35
+#define SYS_SLEEP        36
+#define SYS_GET_TICKS    37
+#define SYS_KBHIT        38
+#define SYS_WAIT         39
+#define SYS_GET_USERNAME 40
+#define SYS_CHMOD        41
+#define SYS_DUP2         42
+#define SYS_PIPE         43
+#define SYS_GETGID       44
+#define SYS_SETGID       45
+#define SYS_DRAW_CHAR_AT 46
+#define SYS_DRAW_STRING_AT 47
+#define SYS_UPDATE_CURSOR 48
 
 // Kernel-side functions
 void syscall_init();
 void syscall_set_cwd(uint32_t id);
-uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx,
-                     uint32_t edx, uint32_t esi, uint32_t edi);
+void syscall_free_fd(task_t* task, int fd);
+void syscall_close_all(task_t* task);
+uint32_t syscall_handler(registers_t* regs);
 extern void syscall_interrupt_wrapper();
 
 // User-space system call wrappers
@@ -319,6 +353,32 @@ static inline int sys_setuid(uint32_t uid) {
     return ret;
 }
 
+static inline uint32_t sys_getgid() {
+    uint32_t ret;
+    __asm__ volatile(
+        "mov $44, %%eax\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : : "eax"
+    );
+    return ret;
+}
+
+static inline int sys_setgid(uint32_t gid) {
+    int ret;
+    __asm__ volatile(
+        "mov $45, %%eax\n"
+        "mov %1, %%ebx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(gid)
+        : "eax", "ebx"
+    );
+    return ret;
+}
+
 static inline char sys_getchar() {
     char ret;
     __asm__ volatile(
@@ -359,6 +419,19 @@ static inline void sys_restart() {
     );
 }
 
+static inline void sys_get_mem_stats(uint32_t* total, uint32_t* used, uint32_t* free) {
+    __asm__ volatile(
+        "mov $31, %%eax\n"
+        "mov %0, %%ebx\n"
+        "mov %1, %%ecx\n"
+        "mov %2, %%edx\n"
+        "int $0x80\n"
+        :
+        : "r"(total), "r"(used), "r"(free)
+        : "eax", "ebx", "ecx", "edx"
+    );
+}
+
 static inline int sys_authenticate(const char* password) {
     int ret;
     __asm__ volatile(
@@ -389,6 +462,34 @@ static inline int sys_getdents(const char* path, struct dirent* buf, int count) 
     return ret;
 }
 
+static inline int sys_exec(const char* path, char** argv) {
+    int ret;
+    __asm__ volatile(
+        "mov $32, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov %2, %%ecx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(path), "r"(argv)
+        : "eax", "ebx", "ecx"
+    );
+    return ret;
+}
+
+static inline int sys_fork() {
+    int ret;
+    __asm__ volatile(
+        "mov $33, %%eax\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        :
+        : "eax"
+    );
+    return ret;
+}
+
 static inline void sys_exit(int status) {
     __asm__ volatile(
         "mov $11, %%eax\n"      // SYS_EXIT
@@ -396,6 +497,154 @@ static inline void sys_exit(int status) {
         "int $0x80\n"
         : : "r"(status) : "eax", "ebx"
     );
+}
+
+static inline int sys_get_procs(proc_info_t* buf, int max) {
+    int ret;
+    __asm__ volatile(
+        "mov $34, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov %2, %%ecx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(buf), "r"(max)
+        : "eax", "ebx", "ecx"
+    );
+    return ret;
+}
+
+static inline int sys_kill(uint32_t pid) {
+    int ret;
+    __asm__ volatile(
+        "mov $35, %%eax\n"
+        "mov %1, %%ebx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(pid)
+        : "eax", "ebx"
+    );
+    return ret;
+}
+
+static inline void sys_sleep(uint32_t ticks) {
+    __asm__ volatile(
+        "mov $36, %%eax\n"
+        "mov %0, %%ebx\n"
+        "int $0x80\n"
+        : : "r"(ticks) : "eax", "ebx"
+    );
+}
+
+static inline uint32_t sys_get_ticks() {
+    uint32_t ret;
+    __asm__ volatile(
+        "mov $37, %%eax\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret) : : "eax"
+    );
+    return ret;
+}
+
+static inline int sys_kbhit() {
+    int ret;
+    __asm__ volatile(
+        "mov $38, %%eax\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret) : : "eax"
+    );
+    return ret;
+}
+
+static inline int sys_wait(uint32_t pid) {
+    int ret;
+    __asm__ volatile(
+        "mov $39, %%eax\n"
+        "mov %1, %%ebx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(pid)
+        : "eax", "ebx"
+    );
+    return ret;
+}
+
+static inline int sys_get_username(char* buf, uint32_t size) {
+    int ret;
+    __asm__ volatile(
+        "mov $40, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov %2, %%ecx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(buf), "r"(size)
+        : "eax", "ebx", "ecx"
+    );
+    return ret;
+}
+
+static inline int sys_stat(const char* path, struct_stat_t* buf) {
+    int ret;
+    __asm__ volatile(
+        "mov $10, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov %2, %%ecx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(path), "r"(buf)
+        : "eax", "ebx", "ecx"
+    );
+    return ret;
+}
+
+static inline int sys_chmod(const char* path, uint32_t mode) {
+    int ret;
+    __asm__ volatile(
+        "mov $41, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov %2, %%ecx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(path), "r"(mode)
+        : "eax", "ebx", "ecx"
+    );
+    return ret;
+}
+
+static inline int sys_dup2(int oldfd, int newfd) {
+    int ret;
+    __asm__ volatile(
+        "mov $42, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov %2, %%ecx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(oldfd), "r"(newfd)
+        : "eax", "ebx", "ecx"
+    );
+    return ret;
+}
+
+static inline int sys_pipe(int pipefd[2]) {
+    int ret;
+    __asm__ volatile(
+        "mov $43, %%eax\n"
+        "mov %1, %%ebx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(pipefd)
+        : "eax", "ebx"
+    );
+    return ret;
 }
 
 #endif // SYSCALL_H

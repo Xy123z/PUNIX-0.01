@@ -58,7 +58,7 @@ void paging_init() {
                      0x000B8000,
                      0x000B8000,
                      0x00008000,  // 32KB
-                     PAGE_PRESENT | PAGE_RW | PAGE_USER); // User reachable for console
+                     PAGE_PRESENT | PAGE_RW); // Supervisor mode only
 
     current_page_directory = kernel_page_directory;
 
@@ -120,6 +120,9 @@ void paging_map_page(page_directory_t* dir, uint32_t virt, uint32_t phys, uint32
 
     // Set page table entry
     table->entries[pt_idx] = (phys & 0xFFFFF000) | flags;
+
+    // Invalidate TLB entry for this virtual address
+    __asm__ volatile("invlpg (%0)" : : "r"(virt));
 }
 
 /**
@@ -239,20 +242,22 @@ page_directory_t* paging_clone_directory(page_directory_t* src) {
 
         for (int pt_idx = 0; pt_idx < PAGE_ENTRIES; pt_idx++) {
             if (src_table->entries[pt_idx] & PAGE_PRESENT) {
-                // Allocate new physical page
-                void* new_page = pmm_alloc_page();
-                if (!new_page) {
-                    // TODO: Clean up
-                    return 0;
+                // If the page is writable, mark it as COW in both
+                if (src_table->entries[pt_idx] & PAGE_RW) {
+                    src_table->entries[pt_idx] &= ~PAGE_RW;
+                    src_table->entries[pt_idx] |= PAGE_COW;
                 }
-
-                // Copy page contents
-                void* src_page = (void*)(src_table->entries[pt_idx] & 0xFFFFF000);
-                memcpy(new_page, src_page, PAGE_SIZE);
-
-                // Set new page table entry
-                new_table->entries[pt_idx] = ((uint32_t)new_page & 0xFFFFF000) | 
-                                            (src_table->entries[pt_idx] & 0xFFF);
+                
+                // Link child to same physical page
+                new_table->entries[pt_idx] = src_table->entries[pt_idx];
+                
+                // Increment refcount
+                uint32_t phys = src_table->entries[pt_idx] & 0xFFFFF000;
+                pmm_ref_page((void*)phys);
+                
+                // Flush TLB for parent since we might have made it RO
+                // Actually, paging_clone_directory is usually called from task_fork
+                // which is fine, but we should be careful.
             }
         }
 
@@ -314,14 +319,47 @@ void paging_free_page(page_directory_t* dir, uint32_t virt) {
     }
 }
 
-/**
- * @brief Page fault handler
- */
-void page_fault_handler(uint32_t error_code, uint32_t fault_addr) {
-    //void page_fault_handler(uint32_t error_code, uint32_t fault_addr) {
-    // CR2 is now passed as argument
-    uint32_t faulting_address = fault_addr;
+void page_fault_handler(uint32_t error_code, uint32_t faulting_address) {
+    // Handle Copy-On-Write
+    if (error_code & 0x2) { // Write fault
+        uint32_t pd_idx = PAGE_DIR_INDEX(faulting_address);
+        if (current_page_directory->entries[pd_idx] & PAGE_PRESENT) {
+            page_table_t* table = (page_table_t*)(current_page_directory->entries[pd_idx] & 0xFFFFF000);
+            uint32_t pt_idx = PAGE_TABLE_INDEX(faulting_address);
+            
+            if (table->entries[pt_idx] & PAGE_COW) {
+                uint32_t entry = table->entries[pt_idx];
+                uint32_t phys = entry & 0xFFFFF000;
+                
+                if (pmm_get_ref((void*)phys) > 1) {
+                    // Shared page, must copy
+                    void* new_page = pmm_alloc_page();
+                    if (!new_page) {
+                        console_print_colored("COW: Out of memory!\n", COLOR_LIGHT_RED);
+                        while(1) __asm__ volatile("hlt");
+                    }
+                    
+                    // Copy data
+                    memcpy(new_page, (void*)phys, PAGE_SIZE);
+                    
+                    // Release old page reference
+                    pmm_unref_page((void*)phys);
+                    
+                    // Update entry: New physical address + RW bit - COW bit
+                    table->entries[pt_idx] = ((uint32_t)new_page & 0xFFFFF000) | (entry & 0xFFF & ~PAGE_COW) | PAGE_RW;
+                } else {
+                    // Last owner, just make writable and clear COW bit
+                    table->entries[pt_idx] = (entry & ~PAGE_COW) | PAGE_RW;
+                }
+                
+                // Flush TLB for this address
+                __asm__ volatile("invlpg (%0)" : : "r"(faulting_address) : "memory");
+                return; // Fault handled successfully
+            }
+        }
+    }
 
+    // --- REAL PAGE FAULT (Not COW) ---
     console_print_colored("\n=== PAGE FAULT ===\n", COLOR_LIGHT_RED);
     console_print("Faulting address: 0x");
     char hex[16];
@@ -346,7 +384,7 @@ void page_fault_handler(uint32_t error_code, uint32_t fault_addr) {
 
     console_print(")\n");
 
-    // For now, halt on page fault
+    // For now, halt on real page faults
     console_print_colored("System halted.\n", COLOR_LIGHT_RED);
     while(1) __asm__ volatile("hlt");
 }

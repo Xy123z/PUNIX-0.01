@@ -9,6 +9,14 @@ typedef unsigned char  uint8_t;
 typedef char           int8_t;
 typedef unsigned int   size_t;
 
+#ifndef NULL
 #define NULL 0
+#endif
+
+typedef struct {
+    uint32_t pid;
+    uint32_t state;
+    char name[32];
+} proc_info_t;
 
 #endif

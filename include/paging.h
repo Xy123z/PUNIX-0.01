@@ -20,6 +20,7 @@
 #define PAGE_USER       0x004  // User/Supervisor (1 = user, 0 = supervisor)
 #define PAGE_ACCESSED   0x020  // Page has been accessed
 #define PAGE_DIRTY      0x040  // Page has been written to
+#define PAGE_COW        0x200  // Copy-On-Write (bit 9 is available for OS)
 
 // Page directory entry and page table entry are both 32-bit values
 typedef uint32_t page_t;

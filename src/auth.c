@@ -19,9 +19,9 @@ typedef struct {
     uint8_t padding[400];              // Pad to ~512 bytes
 } credentials_t;
 
-// Global variables (from shell.c)
-extern char ROOT_PASSWORD[MAX_PASSWORD_LEN];
-extern char USERNAME[MAX_USERNAME_LEN];
+// Global variables
+char ROOT_PASSWORD[MAX_PASSWORD_LEN] = {0};
+char USERNAME[MAX_USERNAME_LEN] = {0};
 
 /**
  * @brief Checks if credentials file exists
@@ -88,7 +88,7 @@ int auth_save_credentials() {
     fs_node_t* etc_dir = fs_find_node("etc", fs_root_id);
     if (!etc_dir) {
         // Create /etc directory
-        if (!fs_create_node(fs_root_id, "etc", FS_TYPE_DIRECTORY)) {
+        if (!fs_create_node(fs_root_id, "etc", FS_TYPE_DIRECTORY, 0, 0)) {
             console_print_colored("Error: Failed to create /etc directory.\n", COLOR_LIGHT_RED);
             return 0;
         }
@@ -104,7 +104,7 @@ int auth_save_credentials() {
 
     if (cred_id == 0) {
         // Create credentials file
-        if (!fs_create_node(etc_dir->id, CREDENTIALS_FILE, FS_TYPE_FILE)) {
+        if (!fs_create_node(etc_dir->id, CREDENTIALS_FILE, FS_TYPE_FILE, 0, 0)) {
             console_print_colored("Error: Failed to create credentials file.\n", COLOR_LIGHT_RED);
             return 0;
         }

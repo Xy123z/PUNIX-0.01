@@ -23,6 +23,35 @@
 #define FS_TYPE_FILE          0
 #define FS_TYPE_DIRECTORY     1
 
+// Permission bits
+#ifndef S_IRUSR
+#define S_IRUSR 0400
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR 0200
+#endif
+#ifndef S_IXUSR
+#define S_IXUSR 0100
+#endif
+#ifndef S_IRGRP
+#define S_IRGRP 0040
+#endif
+#ifndef S_IWGRP
+#define S_IWGRP 0020
+#endif
+#ifndef S_IXGRP
+#define S_IXGRP 0010
+#endif
+#ifndef S_IROTH
+#define S_IROTH 0004
+#endif
+#ifndef S_IWOTH
+#define S_IWOTH 0002
+#endif
+#ifndef S_IXOTH
+#define S_IXOTH 0001
+#endif
+
 // Disk Layout (Must match fs.h)
 #define FS_SUPERBLOCK_SECTOR  256
 #define FS_INODE_BITMAP_SECTOR 257
@@ -338,17 +367,40 @@ static uint32_t create_file_from_buffer(uint32_t parent_id, const char* name,
         uint32_t offset = 0;
         uint8_t block_buf[SECTOR_SIZE];
 
-        for (int i = 0; i < 12 && remaining > 0; i++) {
+        for (int i = 0; remaining > 0; i++) {
             uint32_t b_id = block_alloc();
             if (b_id == 0) die("Failed to allocate block");
-
-            node.blocks[i] = b_id;
-            node.block_count++;
 
             uint32_t to_write = remaining > SECTOR_SIZE ? SECTOR_SIZE : remaining;
             memset(block_buf, 0, SECTOR_SIZE);
             memcpy(block_buf, (const uint8_t*)data + offset, to_write);
             write_sector(b_id, block_buf);
+
+            if (i < 12) {
+                node.blocks[i] = b_id;
+                node.block_count++;
+            } else {
+                // Indirect block logic
+                if (node.indirect_block == 0) {
+                    uint32_t ind_id = block_alloc();
+                    if (ind_id == 0) die("Failed to allocate indirect block");
+                    node.indirect_block = ind_id;
+                    uint8_t zero[SECTOR_SIZE];
+                    memset(zero, 0, SECTOR_SIZE);
+                    write_sector(ind_id, zero);
+                }
+
+                uint32_t indices[SECTOR_SIZE / sizeof(uint32_t)];
+                read_sector(node.indirect_block, indices);
+                uint32_t ind_idx = i - 12;
+                if (ind_idx >= (SECTOR_SIZE / sizeof(uint32_t))) {
+                    fprintf(stderr, "WARNING: File '%s' exceeded max size limits\n", name);
+                    break;
+                }
+                indices[ind_idx] = b_id;
+                node.block_count++;
+                write_sector(node.indirect_block, indices);
+            }
 
             offset += to_write;
             remaining -= to_write;
@@ -440,10 +492,10 @@ static uint32_t copy_host_file(uint32_t parent_id, const char* dest_name,
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size > 12 * SECTOR_SIZE) {  // Max 12 blocks (6KB)
-        fprintf(stderr, "  WARNING: File '%s' too large (%ld bytes) - truncating to 6KB\n",
+    if (size > (12 + 128) * SECTOR_SIZE) {  // Max size with 1 indirect block
+        fprintf(stderr, "  WARNING: File '%s' too large (%ld bytes) - truncating\n",
                 src_path, size);
-        size = 12 * SECTOR_SIZE;
+        size = (12 + 128) * SECTOR_SIZE;
     }
 
     // Read file content
@@ -546,6 +598,7 @@ int main(int argc, char** argv) {
 
     // Create /usr subdirectories
     uint32_t usr_bin    = create_directory(usr_id, "bin", 0755);
+    uint32_t usr_sbin   = create_directory(usr_id, "sbin", 0755);
     uint32_t usr_lib    = create_directory(usr_id, "lib", 0755);
     uint32_t usr_local  = create_directory(usr_id, "local", 0755);
     uint32_t usr_share  = create_directory(usr_id, "share", 0755);
@@ -578,25 +631,47 @@ int main(int argc, char** argv) {
     printf("  NOTE: Shell and text editor are kernel modules\n");
     printf("  Creating placeholder entries for future user-space versions...\n");
 
-    create_file(bin_id, "shell.txt",
-        "# Shell Placeholder\n"
-        "# This will be replaced with a user-space shell binary\n"
-        "# Currently compiled into kernel\n");
-
-    create_file(bin_id, "edit.txt",
-        "# Text Editor Placeholder\n"
-        "# This will be replaced with a user-space editor binary\n"
-        "# Currently compiled into kernel\n");
-
-    // Copy hello user programs to /bin
-    uint32_t hello_file_1 = copy_host_file(bin_id, "hello1", "hello1.bin", 0755);
-    if (hello_file_1 == 0) {
-        printf("  WARNING: hello1.bin not found - hello1 program not copied to /bin\n");
+    // Copy Shell and Text Editor to /bin
+    uint32_t bash_id = copy_host_file(bin_id, "bash", "pbash.prog", 0755);
+    if (bash_id == 0) {
+        printf("  WARNING: pbash.prog not found - bash not copied to /bin\n");
+    } else {
+        // Create 'sh' as a link to 'bash' (by copying the file again for simplicity in mkfs)
+        copy_host_file(bin_id, "sh", "pbash.prog", 0755);
     }
-    uint32_t hello_file_2 = copy_host_file(bin_id, "hello2", "hello2.bin", 0755);
-    if (hello_file_2 == 0) {
-        printf("  WARNING: hello2.bin not found - hello2 program not copied to /bin\n");
+
+    uint32_t text_file = copy_host_file(usr_bin, "edit", "text.prog", 0755);
+    if (text_file == 0) {
+        printf("  WARNING: text.prog not found - text editor not copied to /usr/bin\n");
     }
+    
+    uint32_t clock_file = copy_host_file(usr_bin, "clock", "clock.prog", 0755);
+    if (clock_file == 0) {
+        printf("  WARNING: clock.prog not found - clock not copied to /usr/bin\n");
+    }
+
+    copy_host_file(bin_id, "ls", "ls.prog", 0755);
+    copy_host_file(bin_id, "mkdir", "mkdir.prog", 0755);
+    copy_host_file(bin_id, "rmdir", "rmdir.prog", 0755);
+    copy_host_file(bin_id, "cat", "cat.prog", 0755);
+    copy_host_file(bin_id, "pwd", "pwd.prog", 0755);
+    copy_host_file(bin_id, "clear", "clear.prog", 0755);
+    copy_host_file(bin_id, "chmod", "chmod.prog", 0755);
+    copy_host_file(bin_id, "echo", "echo.prog", 0755);
+    copy_host_file(bin_id, "snake", "snake.prog", 0755);
+    copy_host_file(bin_id, "loadbar", "loadbar.prog", 0755);
+
+    copy_host_file(sbin_id, "ps", "ps.prog", 0755);
+    copy_host_file(sbin_id, "kill", "kill.prog", 0755);
+    copy_host_file(sbin_id, "mem", "mem.prog", 0755);
+    copy_host_file(sbin_id, "init", "init.prog", 0755);
+    copy_host_file(sbin_id, "zombie_test", "zombie_test.prog", 0755);
+
+    // Copy hello user programs to /usr/bin
+    copy_host_file(usr_bin, "hello1", "hello1.bin", 0755);
+    copy_host_file(usr_bin, "hello2", "hello2.bin", 0755);
+
+    copy_host_file(usr_bin, "testvga", "test_vga.prog", 0755);
 
     printf("\n");
     printf("Creating configuration files in /etc...\n");
