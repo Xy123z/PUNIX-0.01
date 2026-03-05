@@ -1,0 +1,149 @@
+======================================
+Modular Kernel Build Script
+======================================
+
+[1/16] Cleaning...
+    Done!
+
+[2/16] Compiling string.c...
+[3/16] Compiling vga.c...
+[4/16] Compiling memory.c...
+[5/16] Compiling interrupt.c...
+[7/16] Compiling fs.c...
+[9/16] Compiling gdt.c...
+[10/16] Compiling task.c...
+[11/16] Assembling GDT flush, User Entry, Task Switch & Boot Entry...
+[12b/16] Compiling loader.c...
+[12/16] Compiling console.c...
+[13/16] Compiling mouse.c...
+[14/16] Compiling ata.c...
+[15/16] Compiling math.c...
+[16/16] Compiling auth.c...
+[16/16] Compiling tty.c...
+[16b/16] Compiling pipe.c...
+[17/16] Compiling paging.c...
+[18/16] Compiling syscall.c...
+[19/16] Compiling kernel.c...
+[20/16] Compiling kernel_shell.c...
+[21/16] Linking kernel...
+
+Kernel size: 57488 bytes (113 sectors)
+
+[21/16] Assembling bootloader...
+[21b/16] Compiling userspace libc...
+[21c/16] Compiling shell.prog and text.prog...
+[22/16] Creating OS image...
+
+======================================
+Kernel Build Complete!
+Kernel: 57488 bytes (113 sectors)
+Bootloader: 512 bytes (1 sector)
+Filesystem starts at sector: 114
+======================================
+
+[23/16] Building host-side filesystem creator...
+[24/16] Creating filesystem on disk image...
+
+Available files for copying:
+-rw-rw-r-- 1 puskar-banerjee puskar-banerjee 512 Mar  5 00:07 boot.bin
+-rwxrwxr-x 1 puskar-banerjee puskar-banerjee 57K Mar  5 00:07 kernel.bin
+
+  WARNING: Could not open 'hello1.bin' - skipping
+====================================
+PUNIX-FS Host Creator
+Linux-style Directory Layout
+====================================
+
+Formatting filesystem...
+Superblock created (magic: 0xEF5342)
+
+Creating Linux-style directory structure...
+  Root directory created (inode 1)
+  Created directory /bin (inode 2, mode 0755)
+  Created directory /boot (inode 3, mode 0755)
+  Created directory /dev (inode 4, mode 0755)
+  Created directory /etc (inode 5, mode 0755)
+  Created directory /home (inode 6, mode 0755)
+  Created directory /lib (inode 7, mode 0755)
+  Created directory /mnt (inode 8, mode 0755)
+  Created directory /opt (inode 9, mode 0755)
+  Created directory /proc (inode 10, mode 0755)
+  Created directory /root (inode 11, mode 0700)
+  Created directory /sbin (inode 12, mode 0755)
+  Created directory /srv (inode 13, mode 0755)
+  Created directory /tmp (inode 14, mode 0777)
+  Created directory /usr (inode 15, mode 0755)
+  Created directory /var (inode 16, mode 0755)
+  Created directory /bin (inode 17, mode 0755)
+  Created directory /sbin (inode 18, mode 0755)
+  Created directory /lib (inode 19, mode 0755)
+  Created directory /local (inode 20, mode 0755)
+  Created directory /share (inode 21, mode 0755)
+  Created directory /log (inode 22, mode 0755)
+  Created directory /tmp (inode 23, mode 0755)
+  Created directory /user (inode 24, mode 0755)
+
+Copying system binaries to /boot and /bin...
+  Created file /bootloader.bin (inode 25, 512 bytes, mode 0644)
+  Created file /kernel.bin (inode 26, 57488 bytes, mode 0644)
+  NOTE: Shell and text editor are kernel modules
+  Creating placeholder entries for future user-space versions...
+  Created file /getty (inode 27, 4688 bytes, mode 0755)
+  Created file /login (inode 28, 4726 bytes, mode 0755)
+  Created /dev/tty0 (Major 4, Minor 0)
+  Created /dev/tty1 (Major 4, Minor 1)
+  Created /dev/tty2 (Major 4, Minor 2)
+  Created /dev/tty3 (Major 4, Minor 3)
+  Created file /bash (inode 33, 8224 bytes, mode 0755)
+  Created file /sh (inode 34, 8224 bytes, mode 0755)
+  Created file /edit (inode 35, 5800 bytes, mode 0755)
+  Created file /clock (inode 36, 4391 bytes, mode 0755)
+  Created file /ls (inode 37, 4963 bytes, mode 0755)
+  Created file /mkdir (inode 38, 4360 bytes, mode 0755)
+  Created file /rmdir (inode 39, 4375 bytes, mode 0755)
+  Created file /cat (inode 40, 4428 bytes, mode 0755)
+  Created file /pwd (inode 41, 4344 bytes, mode 0755)
+  Created file /clear (inode 42, 4215 bytes, mode 0755)
+  Created file /chmod (inode 43, 4370 bytes, mode 0755)
+  Created file /echo (inode 44, 4348 bytes, mode 0755)
+  Created file /snake (inode 45, 5572 bytes, mode 0755)
+  Created file /loadbar (inode 46, 5275 bytes, mode 0755)
+  Created file /ps (inode 47, 4576 bytes, mode 0755)
+  Created file /kill (inode 48, 4401 bytes, mode 0755)
+  Created file /mem (inode 49, 4566 bytes, mode 0755)
+  Created file /init (inode 50, 4532 bytes, mode 0755)
+  Created file /zombie_test (inode 51, 4754 bytes, mode 0755)
+  Created file /hello2 (inode 52, 409 bytes, mode 0755)
+  Created file /testvga (inode 53, 4471 bytes, mode 0755)
+
+Creating configuration files in /etc...
+  Created file /fstab (inode 54, 119 bytes, mode 0644)
+  Created file /hostname (inode 55, 13 bytes, mode 0644)
+  Created file /passwd (inode 56, 77 bytes, mode 0644)
+  Created file /motd (inode 57, 202 bytes, mode 0644)
+
+Creating user files in /home/user...
+  Created file /welcome.txt (inode 58, 358 bytes, mode 0644)
+  Created file /notes.txt (inode 59, 132 bytes, mode 0644)
+  Created file /README (inode 60, 870 bytes, mode 0644)
+  Created file /os-release (inode 61, 123 bytes, mode 0644)
+
+====================================
+Filesystem created successfully!
+====================================
+Total inodes: 256, Free: 195, Used: 61
+Total blocks: 102400, Free: 101688, Used: 712
+Used space: 356 KB (0.70%)
+
+Directory structure follows Linux FHS:
+  - 15 root directories created
+  - System binaries stored in /boot
+  - Configuration files in /etc
+  - User files in /home/user
+
+
+======================================
+Filesystem created successfully!
+Verifying /boot contents...
+======================================
+

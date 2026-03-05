@@ -1,0 +1,27 @@
+======================================
+Modular Kernel Build Script
+======================================
+
+[1/16] Cleaning...
+    Done!
+
+[2/16] Compiling string.c...
+[3/16] Compiling vga.c...
+[4/16] Compiling memory.c...
+[5/16] Compiling interrupt.c...
+[7/16] Compiling fs.c...
+[9/16] Compiling gdt.c...
+[10/16] Compiling task.c...
+src/task.c: In function ‘task_deliver_signals’:
+src/task.c:408:13: warning: implicit declaration of function ‘task_default_signal_action’ [-Wimplicit-function-declaration]
+  408 |             task_default_signal_action(sig);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~
+src/task.c: At top level:
+src/task.c:434:13: warning: conflicting types for ‘task_default_signal_action’; have ‘void(int)’
+  434 | static void task_default_signal_action(int sig) {
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~
+src/task.c:434:13: error: static declaration of ‘task_default_signal_action’ follows non-static declaration
+src/task.c:408:13: note: previous implicit declaration of ‘task_default_signal_action’ with type ‘void(int)’
+  408 |             task_default_signal_action(sig);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~
+Error!

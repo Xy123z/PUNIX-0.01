@@ -1,0 +1,50 @@
+======================================
+Modular Kernel Build Script
+======================================
+
+[1/16] Cleaning...
+    Done!
+
+[2/16] Compiling string.c...
+[3/16] Compiling vga.c...
+[4/16] Compiling memory.c...
+[5/16] Compiling interrupt.c...
+[7/16] Compiling fs.c...
+[9/16] Compiling gdt.c...
+[10/16] Compiling task.c...
+src/task.c:28:5: error: expected identifier or ‘(’ before ‘if’
+   28 |     if (v == 0) { buf[0]='0'; buf[1]='\0'; return; }
+      |     ^~
+src/task.c:30:16: error: ‘v’ undeclared here (not in a function)
+   30 |     int neg = (v < 0); if (neg) v = -v;
+      |                ^
+src/task.c:30:24: error: expected identifier or ‘(’ before ‘if’
+   30 |     int neg = (v < 0); if (neg) v = -v;
+      |                        ^~
+src/task.c:31:5: error: expected identifier or ‘(’ before ‘while’
+   31 |     while (v) { tmp[i++] = '0' + (v % 10); v /= 10; }
+      |     ^~~~~
+src/task.c:32:5: error: expected identifier or ‘(’ before ‘if’
+   32 |     if (neg) tmp[i++] = '-';
+      |     ^~
+src/task.c:33:5: error: expected identifier or ‘(’ before ‘for’
+   33 |     for (int j=0; j<i; j++) buf[j] = tmp[i-1-j];
+      |     ^~~
+src/task.c:33:20: error: expected ‘=’, ‘,’, ‘;’, ‘asm’ or ‘__attribute__’ before ‘<’ token
+   33 |     for (int j=0; j<i; j++) buf[j] = tmp[i-1-j];
+      |                    ^
+src/task.c:33:25: error: expected ‘=’, ‘,’, ‘;’, ‘asm’ or ‘__attribute__’ before ‘++’ token
+   33 |     for (int j=0; j<i; j++) buf[j] = tmp[i-1-j];
+      |                         ^~
+src/task.c:34:5: warning: data definition has no type or storage class
+   34 |     buf[i] = '\0';
+      |     ^~~
+src/task.c:34:5: warning: type defaults to ‘int’ in declaration of ‘buf’ [-Wimplicit-int]
+src/task.c:34:5: error: variably modified ‘buf’ at file scope
+src/task.c:34:14: error: invalid initializer
+   34 |     buf[i] = '\0';
+      |              ^~~~
+src/task.c:35:1: error: expected identifier or ‘(’ before ‘}’ token
+   35 | }
+      | ^
+Error!
