@@ -691,7 +691,7 @@ int main(int argc, char** argv) {
         copy_host_file(bin_id, "sh", "pbash.prog", 0755);
     }
 
-    uint32_t text_file = copy_host_file(usr_bin, "edit", "text.prog", 0755);
+    uint32_t text_file = copy_host_file(usr_bin, "pnano", "text.prog", 0755);
     if (text_file == 0) {
         printf("  WARNING: text.prog not found - text editor not copied to /usr/bin\n");
     }

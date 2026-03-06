@@ -13,7 +13,7 @@
 #define TTY_ROWS        25
 #define TTY_BUF_LINES   200          // Scrollback buffer depth
 #define TTY_BUF_SIZE    (TTY_COLS * TTY_BUF_LINES)
-#define TTY_COUNT       5            // /dev/tty0 .. /dev/tty3, plus /dev/ttyS0
+#define TTY_COUNT       8            // /dev/tty0 .. /dev/tty3, plus /dev/ttyS0 ... /dev/ttyS3
 
 // ─── ANSI Colour Definitions (VGA attribute bytes) ────────────────────────
 #ifndef COLOR_BLACK

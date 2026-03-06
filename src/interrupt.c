@@ -217,6 +217,22 @@ __asm__(
     "   iret\n"
 );
 
+extern void serial_interrupt_handler_irq3(void);
+__asm__(
+    ".global serial_interrupt_handler_irq3\n"
+    "serial_interrupt_handler_irq3:\n"
+    "   cli\n"
+    "   pusha\n"
+    "   push %ds\n" "   push %es\n" "   push %fs\n" "   push %gs\n"
+    "   mov $0x10, %ax\n"
+    "   mov %ax, %ds\n" "   mov %ax, %es\n"
+    "   mov %ax, %fs\n" "   mov %ax, %gs\n"
+    "   call serial_handler_irq3\n"      // <-- only difference
+    "   pop %gs\n" "   pop %fs\n" "   pop %es\n" "   pop %ds\n"
+    "   popa\n"
+    "   iret\n"
+);
+
 // ─── IDT setup ───────────────────────────────────────────────────────────
 struct idt_entry idt[256];
 struct idt_ptr   idtp;
@@ -237,6 +253,7 @@ void idt_init(void) {
     idt_set_gate(32,   (uint32_t)timer_interrupt_handler,      0x08, 0x8E);
     idt_set_gate(33,   (uint32_t)keyboard_interrupt_handler,   0x08, 0x8E);
     idt_set_gate(36,   (uint32_t)serial_interrupt_handler,     0x08, 0x8E); // IRQ4 for COM1
+    idt_set_gate(35, (uint32_t)serial_interrupt_handler_irq3, 0x08, 0x8E); // IRQ3 → COM2/COM4
     idt_set_gate(0x80, (uint32_t)syscall_interrupt_wrapper,    0x08, 0xEE);
     __asm__ volatile("lidt %0"::"m"(idtp));
 }
@@ -244,6 +261,6 @@ void idt_init(void) {
 void pic_init(void) {
     outb(0x20, 0x11); outb(0x21, 0x20); outb(0x21, 0x04); outb(0x21, 0x01);
     outb(0xA0, 0x11); outb(0xA1, 0x28); outb(0xA1, 0x02); outb(0xA1, 0x01);
-    outb(0x21, 0xEC); // Unmask IRQ0 (timer), IRQ1 (kbd), and IRQ4 (COM1) (1110 1100 = 0xEC)
+    outb(0x21, 0xE4); // 1110 0100 → unmasks IRQ0, IRQ1, IRQ3, IRQ4
     outb(0xA1, 0xFF);
 }

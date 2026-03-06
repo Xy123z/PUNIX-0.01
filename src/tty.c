@@ -45,7 +45,7 @@ static void tty_device_init(tty_device_t* tty, int index) {
 
     tty->index = index;
     tty->in_use = 0;
-    tty->is_serial = (index == 4); // Index 4 is /dev/ttyS0
+    tty->is_serial = (index >= 4); // Index >=4 is /dev/ttyS0 to /dev/ttyS3
 
     // Fill buffer with spaces using default colour
     uint16_t blank = ' ' | (COLOR_WHITE_ON_BLACK << 8);
@@ -153,7 +153,7 @@ void tty_putchar(tty_device_t* tty, char c, uint8_t color) {
     if (!tty) return;
 
     if (tty->is_serial) {
-        serial_putchar(c);
+        serial_putchar_port(tty->index - 4,c);
         return;
     }
 

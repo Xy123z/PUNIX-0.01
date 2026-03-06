@@ -338,9 +338,12 @@ void fs_init() {
 
     if (dev_dir) {
         char tty_name[16];
-        for (int i = 0; i < 5; i++) {
-            if (i == 4) {
-                strcpy(tty_name, "ttyS0");
+        for (int i = 0; i < 8; i++) {
+            if (i >= 4) {
+                strcpy(tty_name, "ttyS");
+                tty_name[4] = '0' + (i - 4);
+                tty_name[5] = '\0';
+
             } else {
                 strcpy(tty_name, "tty");
                 tty_name[3] = '0' + i;

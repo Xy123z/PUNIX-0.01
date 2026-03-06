@@ -15,7 +15,7 @@ typedef struct {
     char tty[16];
 } getty_info_t;
 
-static getty_info_t gettys[5];
+static getty_info_t gettys[8];
 
 static int fork_getty(int index) {
     int pid = fork();
@@ -24,8 +24,8 @@ static int fork_getty(int index) {
     if (pid == 0) {
         // Child
         char tty_path[32];
-        if (index == 4) {
-            sprintf(tty_path, "/dev/ttyS0");
+        if (index >= 4) {
+            sprintf(tty_path, "/dev/ttyS%d",index - 4);
         } else {
             sprintf(tty_path, "/dev/tty%d", index);
         }
@@ -44,9 +44,9 @@ int main() {
     // init should be quiet
     
     // 1. Launch gettys on tty0 to tty3, and ttyS0
-    for (int i = 0; i < 5; i++) {
-        if (i == 4) {
-            sprintf(gettys[i].tty, "/dev/ttyS0");
+    for (int i = 0; i < 8; i++) {
+        if (i >= 4) {
+            sprintf(gettys[i].tty, "/dev/ttyS%d",i - 4);
         } else {
             sprintf(gettys[i].tty, "/dev/tty%d", i);
         }
@@ -62,7 +62,7 @@ int main() {
             printf("[init] Reaped process %d (status 0x%x)\n", reaped_pid, status);
             // Check if it was one of our gettys
             int found = 0;
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < 8; i++) {
                 if (gettys[i].pid == reaped_pid) {
                     printf("[init] Respawning getty on %s\n", gettys[i].tty);
                     // Respawn

@@ -236,9 +236,19 @@ echo ""
 # Launch QEMU
 #echo "Skipping QEMU launch for headless build."
 #qemu-system-i386 -accel kvm -accel tcg,thread=single -drive file=disk.img,format=raw,index=0,media=disk -boot c -display none -serial stdio
+#qemu-system-i386 \
+ # -accel kvm \
+ # -drive file=disk.img,format=raw,media=disk \
+ # -boot c \
+ # -display gtk \
+ # -serial mon:stdio
 qemu-system-i386 \
   -accel kvm \
   -drive file=disk.img,format=raw,media=disk \
   -boot c \
   -display gtk \
-  -serial mon:stdio
+   -serial mon:stdio \
+  -serial pty \
+  -serial pty \
+  -serial pty \
+
